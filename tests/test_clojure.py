@@ -213,3 +213,9 @@ def test_defns_in_a_top_level_reader_conditional_count_from_every_branch():
         ("d", 7, 7, 1),
     ]
     assert extract_functions("#_#?(:clj (defn a [] 1))\n#_#?@(:clj [(defn b [] 1)])") == []
+
+
+def test_string_and_character_clauses_count():
+    assert cyclomatic_complexity('(defn f [x] (cond (a) "x" (b) "y" :else "z"))') == 4
+    assert cyclomatic_complexity("(defn f [c] (case c \\a 1 \\( 2 :other))") == 4
+    assert cyclomatic_complexity('(defn f [x] (condp = x "a" 1 "b\n c" 2))') == 3

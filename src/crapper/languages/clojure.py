@@ -37,6 +37,13 @@ def _blank_span(source: str, start: int, end: int, out: list[str]) -> None:
         out.append("\n" if ch == "\n" else " ")
 
 
+def _blank_literal(source: str, start: int, end: int, out: list[str]) -> None:
+    """Blank a string or character literal but its first character, so it is still one form."""
+
+    out.append(source[start])
+    _blank_span(source, start + 1, end, out)
+
+
 def _advance_past_reader_token(source: str, index: int) -> int | None:
     """Index after a string, character, or comment, or None when `index` is code."""
 
@@ -134,8 +141,10 @@ def _form_end(source: str, index: int) -> int:
 def without_strings_and_comments(source: str) -> str:
     """Blank strings, comments, character literals, and `#_` discarded forms.
 
-    Character literals are blanked before `"` or `;` can be read, so `\\"` does
-    not open a string and `\\;` does not open a comment.
+    A string or character literal keeps its first character, so a `cond` or
+    `case` clause that is one still counts. Character literals are blanked
+    before `"` or `;` can be read, so `\\"` does not open a string and `\\;`
+    does not open a comment.
     """
 
     out: list[str] = []
@@ -149,12 +158,12 @@ def without_strings_and_comments(source: str) -> str:
         ch = source[index]
         if ch == '"':
             end = _consume_string(source, index, 1)[0]
-            _blank_span(source, index, end, out)
+            _blank_literal(source, index, end, out)
             index = end
             continue
         if ch == "\\":
             end = _char_literal_end(source, index)
-            _blank_span(source, index, end, out)
+            _blank_literal(source, index, end, out)
             index = end
             continue
         if ch == ";":

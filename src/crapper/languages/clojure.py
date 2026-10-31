@@ -103,7 +103,7 @@ def _end_of_one_form(source: str, index: int) -> int:
     if ch == "\\":
         return _char_literal_end(source, index)
     if source.startswith("#_", index):
-        return _form_end(source, index + 2)
+        return _form_end(source, _form_end(source, index + 2))
     return _end_of_atom(source, index)
 
 

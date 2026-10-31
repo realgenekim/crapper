@@ -109,7 +109,7 @@ def test_discards_and_metadata_cover_each_reader_form():
 #_ "string"
 #_ \x
 #_ symbol
-#_ #_(defn inner [] (if x 1 0))
+#_ #_(defn inner [] (if x 1 0)) (defn outer [] (if x 1 0))
 #_(defn boxed []
   "str"
   \;
@@ -166,3 +166,11 @@ def test_reader_keeps_the_real_namespace_name_and_decisions():
     assert extract_functions("#_(defn dropped [] (if x 1 0))\n(defn kept [] 1)\n") == [
         {"name": "kept", "start_line": 2, "end_line": 2, "complexity": 1}
     ]
+
+
+def test_a_discard_of_a_discard_drops_two_forms():
+    source = "#_#_(defn a [] 1)(defn b [] 2)\n(defn c [] 3)"
+    assert [item["name"] for item in extract_functions(source)] == ["c"]
+    source = "#_ #_ #_ (defn a [] 1) (defn b [] 2) (defn c [] 3) (defn d [] 4)"
+    assert [item["name"] for item in extract_functions(source)] == ["d"]
+    assert cyclomatic_complexity("(defn f [x] #_#_(if x 1 0) (when x 1) x)") == 1

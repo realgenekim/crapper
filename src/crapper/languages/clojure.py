@@ -29,7 +29,7 @@ _FORM_SKIP = {
 }
 _THREAD_FORMS = {"some->", "some->>"}
 _CHAR_DELIMITERS = set("()[]{}\";,")
-_PREFIXES = ("#'", "'", "`", "~", "@")
+_PREFIXES = ("#?@", "#?", "#'", "'", "`", "~", "@")
 
 
 def _blank_span(source: str, start: int, end: int, out: list[str]) -> None:
@@ -114,7 +114,7 @@ def _end_of_one_form(source: str, index: int) -> int:
 
 
 def _after_prefix(source: str, index: int) -> int | None:
-    """Index after a quote, syntax-quote, unquote, deref, or var prefix, if one is here."""
+    """Index after a quote, syntax-quote, unquote, deref, var, or reader-conditional prefix."""
 
     for prefix in _PREFIXES:
         if source.startswith(prefix, index):
@@ -351,6 +351,9 @@ def _defn_name(form: str) -> str | None:
 def _remember_form(
     forms: list[dict], source: str, start: int, start_line: int, end: int, line: int
 ) -> None:
+    if source.endswith(("#?", "#?@"), 0, start):
+        forms.extend(_extract_top_level_defns(source[start + 1 : end], start_line))
+        return
     form_text = source[start : end + 1]
     name = _defn_name(form_text)
     if name is None:
@@ -386,10 +389,11 @@ def _skip_reader(source: str, index: int, line: int) -> tuple[int, int] | None:
     return None
 
 
-def _extract_top_level_defns(source: str) -> list[dict]:
+def _extract_top_level_defns(source: str, line: int = 1) -> list[dict]:
+    """Top-level defns. Those inside a reader conditional count from every branch."""
+
     forms: list[dict] = []
     index = 0
-    line = 1
     depth = 0
     form_start = None
     form_line = None

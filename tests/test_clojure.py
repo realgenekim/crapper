@@ -191,3 +191,25 @@ def test_clojure_core_qualified_defn_is_a_function():
         ("b", 1),
     ]
     assert extract_functions("(clojure.core/defnx d [] 1)") == []
+
+
+def test_defns_in_a_top_level_reader_conditional_count_from_every_branch():
+    source = """(ns demo.core)
+#?(:clj (defn a [x] (if x 1 0))
+   :cljs (defn a [x]
+           x))
+#?@(:clj [(defn b [] 1)
+          #?(:cljs (defn c [] 1))])
+(defn d [] 1)
+"""
+    assert [
+        (item["name"], item["start_line"], item["end_line"], item["complexity"])
+        for item in extract_functions(source)
+    ] == [
+        ("a", 2, 2, 2),
+        ("a", 3, 4, 1),
+        ("b", 5, 5, 1),
+        ("c", 6, 6, 1),
+        ("d", 7, 7, 1),
+    ]
+    assert extract_functions("#_#?(:clj (defn a [] 1))\n#_#?@(:clj [(defn b [] 1)])") == []

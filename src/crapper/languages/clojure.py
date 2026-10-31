@@ -360,10 +360,18 @@ def _defn_name(form: str) -> str | None:
     return _read_name(form, _skip_leading_metadata(form, keyword_at))
 
 
+def _follows_reader_conditional(source: str, start: int) -> bool:
+    """True when the form at `start` follows `#?` or `#?@`, blanks allowed between."""
+
+    while start > 0 and (source[start - 1].isspace() or source[start - 1] == ","):
+        start -= 1
+    return source.endswith(("#?", "#?@"), 0, start)
+
+
 def _remember_form(
     forms: list[dict], source: str, start: int, start_line: int, end: int, line: int
 ) -> None:
-    if source.endswith(("#?", "#?@"), 0, start):
+    if _follows_reader_conditional(source, start):
         forms.extend(_extract_top_level_defns(source[start + 1 : end], start_line))
         return
     form_text = source[start : end + 1]

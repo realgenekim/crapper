@@ -228,3 +228,9 @@ def test_a_discard_drops_the_whole_dispatch_form_after_it():
     names = [item["name"] for item in extract_functions("#_ #{(defn a [] 1)}\n(defn b [] 1)")]
     assert names == ["b"]
     assert cyclomatic_complexity("(defn f [x] #_#(if x 1 0) (if x 1 0))") == 2
+
+
+def test_whitespace_may_separate_a_reader_conditional_from_its_list():
+    for source in ("#? (:clj (defn a [] 1))", "#?@ ,\n(:clj [(defn a [] 1)])"):
+        assert [item["name"] for item in extract_functions(source)] == ["a"]
+    assert extract_functions("(def x 1) (defn a [] 1)")[0]["name"] == "a"

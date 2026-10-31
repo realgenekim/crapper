@@ -30,6 +30,7 @@ _FORM_SKIP = {
 }
 _THREAD_FORMS = {"some->", "some->>"}
 _CHAR_DELIMITERS = set("()[]{}\";,")
+_DISPATCH_OPENERS = ("(", "[", "{", '"')
 _PREFIXES = ("#?@", "#?", "#'", "#=", "'", "`", "~", "@")
 
 
@@ -115,6 +116,8 @@ def _end_of_one_form(source: str, index: int) -> int:
         return _form_end(source, _form_end(source, index + 2))
     if ch == "^":
         return _form_end(source, _form_end(source, index + 1))
+    if ch == "#" and source[index + 1 : index + 2] in _DISPATCH_OPENERS:
+        return _end_of_one_form(source, index + 1)
     after = _after_prefix(source, index)
     if after is not None:
         return _form_end(source, after)
@@ -764,10 +767,18 @@ def _type_units(form: str, base_line: int, head: str | None, spans: list, readin
     return _method_units(form, base_line, spans[body:], lambda protocol: f"{owner}.{protocol}", reading)
 
 
+def _follows_reader_conditional(source: str, start: int) -> bool:
+    """True when the form at `start` follows `#?` or `#?@`, blanks allowed between."""
+
+    while start > 0 and (source[start - 1].isspace() or source[start - 1] == ","):
+        start -= 1
+    return source.endswith(("#?", "#?@"), 0, start)
+
+
 def _remember_form(
     forms: list[dict], source: str, start: int, start_line: int, end: int, reading: _Reading
 ) -> None:
-    if source.endswith(("#?", "#?@"), 0, start):
+    if _follows_reader_conditional(source, start):
         forms.extend(_extract_top_level_defns(source[start + 1 : end], reading, start_line))
         return
     forms.extend(_form_units(source[start : end + 1], start_line, reading))

@@ -392,8 +392,6 @@ def _children(form: str, start: int = 0) -> list[tuple[int, int]]:
         if index >= len(form) or form[index] in ")]}":
             return spans
         end = _child_end(form, index)
-        if end <= index:
-            return spans
         spans.append((index, end))
         index = end
 
@@ -539,8 +537,6 @@ def _form_units(form: str, base_line: int, namespace: str | None = None) -> list
     part of that function.
     """
 
-    if not form.startswith("("):
-        return []
     name = _defn_name(form)
     if name is not None:
         return [{"name": name, "start_line": base_line,

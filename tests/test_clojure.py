@@ -272,3 +272,57 @@ def test_child_end_spans_each_dispatch_and_prefix_form():
                  "#inst", "^:m [x]", "'(a b)", "~@xs"):
         assert _child_end(f"{form} tail", 0) == len(form), form
     assert _child_end("", 0) == 0
+
+
+def _names(source):
+    return {item["name"]: item["complexity"] for item in extract_functions(source)}
+
+
+def test_discarded_and_empty_forms_inside_a_type_are_not_methods():
+    source = (
+        "(deftype T [] P\n"
+        "  #_(skipped [x] (if x 1 0))\n"
+        "  ()\n"
+        "  (kept [x] (when x 1)))\n"
+        "()\n"
+    )
+    assert _names(source) == {"T.kept": 2}
+
+
+def test_extend_protocol_ignores_methods_before_a_type_and_non_symbol_types():
+    source = (
+        "(extend-protocol P\n"
+        "  (orphan [x] 1)\n"
+        '  "text"\n'
+        "  (also-orphan [x] 2)\n"
+        "  String\n"
+        "  (m [x] 3))\n"
+    )
+    assert _names(source) == {"String.m": 1}
+
+
+def test_repeated_method_names_get_numbered_suffixes():
+    source = "(extend-type String P (m [x] 1) (m [x y] (if x 1 0)))"
+    assert _names(source) == {"String.m": 1, "String.m#2": 2}
+
+
+def test_proxy_without_a_symbol_in_its_class_vector_has_no_units():
+    for head in ("Foo", "[]", "[:k]"):
+        source = f"(def p (proxy {head} [] (m [x] 1)))"
+        assert _names(source) == {}, head
+    assert _names("(def p (proxy [:k Foo] [] (m [x] 1)))") == {"Foo.m": 1}
+
+
+def test_def_value_that_is_not_reify_or_proxy_has_no_units():
+    assert _names("(def x (foo 1 2))") == {}
+    assert _names("(def p (proxy [Foo]))") == {}
+
+
+def test_reify_skips_methods_that_precede_any_interface():
+    source = "(def r (reify (orphan [x] 1) Foo (m [x] (if x 1 0))))"
+    assert _names(source) == {"Foo.m": 2}
+
+
+def test_defmethod_needs_a_symbol_multimethod_and_a_dispatch_value():
+    assert _names("(defmethod area)") == {}
+    assert _names('(defmethod "area" :a [x] 1)') == {}

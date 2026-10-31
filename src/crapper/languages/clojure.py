@@ -6,6 +6,7 @@ variants, `and`, `or`, `loop`, `catch`, and each clause of `cond`, `condp`,
 """
 
 import re
+from dataclasses import dataclass, field
 
 from crapper.model import Function
 
@@ -29,7 +30,7 @@ _FORM_SKIP = {
 }
 _THREAD_FORMS = {"some->", "some->>"}
 _CHAR_DELIMITERS = set("()[]{}\";,")
-_PREFIXES = ("#?@", "#?", "#'", "'", "`", "~", "@")
+_PREFIXES = ("#?@", "#?", "#'", "#=", "'", "`", "~", "@")
 
 
 def _blank_span(source: str, start: int, end: int, out: list[str]) -> None:
@@ -121,7 +122,7 @@ def _end_of_one_form(source: str, index: int) -> int:
 
 
 def _after_prefix(source: str, index: int) -> int | None:
-    """Index after a quote, syntax-quote, unquote, deref, var, or reader-conditional prefix."""
+    """Index after a quote, unquote, deref, var, eval, or reader-conditional prefix."""
 
     for prefix in _PREFIXES:
         if source.startswith(prefix, index):
@@ -311,10 +312,16 @@ def _keyword_ends(form: str, after: int) -> bool:
     return after >= len(form) or form[after] in _NAME_STOP
 
 
+_DEFN_HEADS = ("defn", "defn-", ">defn", ">defn-", "defmacro")
+_DEF_HEADS = ("def", "defonce")
+_BODY_START = {"defrecord": 3, "deftype": 3, "extend-type": 2, "extend-protocol": 2}
+_ATOM = re.compile(r'[^\s,()\[\]{}";]*')
+
+
 def _defn_keyword_end(form: str, index: int) -> int | None:
     if form.startswith("clojure.core/", index):
         index += len("clojure.core/")
-    for candidate in ("defn-", "defn"):
+    for candidate in sorted(_DEFN_HEADS, key=len, reverse=True):
         after = index + len(candidate)
         if form.startswith(candidate, index) and _keyword_ends(form, after):
             return after
@@ -357,29 +364,373 @@ def _defn_name(form: str) -> str | None:
     return _read_name(form, _skip_leading_metadata(form, keyword_at))
 
 
+def _skip_gap(text: str, index: int) -> int:
+    """Skip whitespace, commas, comments, and `#_` discarded forms."""
+
+    while index < len(text):
+        ch = text[index]
+        if ch.isspace() or ch == ",":
+            index += 1
+        elif ch == ";":
+            while index < len(text) and text[index] != "\n":
+                index += 1
+        elif text.startswith("#_", index):
+            index = _child_end(text, _skip_gap(text, index + 2))
+        else:
+            return index
+    return index
+
+
+def _atom_end(text: str, index: int) -> int:
+    """End of a symbol, keyword, or number. A comma ends it, as whitespace does."""
+
+    return _ATOM.match(text, index).end()
+
+
+def _child_end(text: str, index: int) -> int:
+    """End of one reader form, including reader prefixes and `^meta`."""
+
+    if index >= len(text):
+        return index
+    if text[index] == "^":
+        return _child_end(text, _skip_gap(text, _child_end(text, index + 1)))
+    after = _after_prefix(text, index)
+    if after is not None:
+        return _child_end(text, _skip_gap(text, after))
+    if text[index] == "#":
+        return _dispatch_end(text, index)
+    if text[index] in "([{\"\\":
+        return _end_of_one_form(text, index)
+    return _atom_end(text, index)
+
+
+def _dispatch_end(text: str, index: int) -> int:
+    """End of a `#`-dispatch form. `_child_end` reads `#?`, `#'`, and `#=` as prefixes.
+
+    A set or anonymous fn ends at its closing bracket, a regex at its closing
+    quote, and `##Inf` at the end of its token. A namespaced map (`#:ns{...}`)
+    or a tagged literal (`#inst "..."`) is its tag and the form after the tag.
+    """
+
+    if text.startswith(("#{", "#("), index):
+        return _balanced_end(text, index + 1)
+    if text.startswith('#"', index):
+        return _consume_string(text, index + 1, 1)[0]
+    tag_end = _atom_end(text, index + 1)
+    if text.startswith("##", index):
+        return tag_end
+    return _child_end(text, _skip_gap(text, tag_end))
+
+
+def _children(form: str, start: int = 0) -> list[tuple[int, int]]:
+    """Spans of the forms directly inside the list that opens at `start`."""
+
+    spans = []
+    index = start + 1
+    while True:
+        index = _skip_gap(form, index)
+        if index >= len(form) or form[index] in ")]}":
+            return spans
+        end = _child_end(form, index)
+        spans.append((index, end))
+        index = end
+
+
+def _head(form: str, spans: list[tuple[int, int]]) -> str | None:
+    if not spans:
+        return None
+    start, end = spans[0]
+    return form[start:end]
+
+
+def _strip_meta(form: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and form[start] == "^":
+        start = _skip_gap(form, _child_end(form, start + 1))
+    return start, end
+
+
+def _symbol(form: str, span: tuple[int, int]) -> str | None:
+    start, end = _strip_meta(form, *span)
+    text = form[start:end]
+    if not text or text[0] in "([{\"\\:#'`~@^":
+        return None
+    return text
+
+
+def _is_list(form: str, span: tuple[int, int]) -> bool:
+    start, end = _strip_meta(form, *span)
+    return start < end and form[start] == "("
+
+
+@dataclass
+class _Reading:
+    """What naming needs from the whole file.
+
+    The namespace and its `:as` aliases resolve `::keyword` dispatch values.
+    `seen` counts each name, so a repeated method or `defmethod` gets `#2`, `#3`.
+    """
+
+    namespace: str | None = None
+    aliases: dict[str, str] = field(default_factory=dict)
+    seen: dict[str, int] = field(default_factory=dict)
+
+    def claim(self, name: str) -> str:
+        count = self.seen.get(name, 0) + 1
+        self.seen[name] = count
+        if count == 1:
+            return name
+        return f"{name}#{count}"
+
+
+def _libspec_aliases(source: str, start: int, prefix: str, out: dict[str, str]) -> None:
+    """Record `alias -> lib` for a libspec, and for the libspecs of a prefix list."""
+
+    if source[start] not in "([":
+        return
+    spans = _children(source, start)
+    texts = [source[s:e] for s, e in spans]
+    if not texts:
+        return
+    lib = prefix + texts[0]
+    for key, value in zip(texts[1:], texts[2:]):
+        if key in (":as", ":as-alias"):
+            out[value] = lib
+    for child_start, _end in spans[1:]:
+        _libspec_aliases(source, child_start, lib + ".", out)
+
+
+def _ns_aliases(source: str) -> dict[str, str]:
+    """The `:as` / `:as-alias` aliases of the `(:require ...)` clauses of the `ns` form."""
+
+    aliases: dict[str, str] = {}
+    match = _NS.search(without_strings_and_comments(source))
+    if match is None:
+        return aliases
+    for start, _end in _children(source, match.start()):
+        clause = _children(source, start) if source[start] == "(" else []
+        if _head(source, clause) == ":require":
+            for libspec_start, _libspec_end in clause[1:]:
+                _libspec_aliases(source, libspec_start, "", aliases)
+    return aliases
+
+
+def _resolve_keyword(body: str, reading: _Reading) -> str:
+    """`::kw` as `:ns/kw`; `::alias/kw` as `:lib/kw` when the alias is known."""
+
+    alias, slash, name = body.partition("/")
+    namespace = reading.aliases.get(alias) if slash else reading.namespace
+    if namespace is None:
+        return f"::{body}"
+    return f":{namespace}/{name if slash else alias}"
+
+
+def _spelling(token: str, reading: _Reading) -> str:
+    if token.startswith('"'):
+        return token.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    if token.startswith("::"):
+        return _resolve_keyword(token[2:], reading)
+    return token
+
+
+def _token_end(text: str, index: int) -> int:
+    if text[index] in "()[]{}":
+        return index + 1
+    if text[index] in "\"\\":
+        return _end_of_one_form(text, index)
+    return _atom_end(text, index)
+
+
+def _dispatch_name(text: str, reading: _Reading) -> str:
+    """The dispatch value as written, with only insignificant whitespace normalized.
+
+    Outside string literals, each run of whitespace, commas, comments, and `#_`
+    discards becomes one space, and none is kept just inside a bracket. A
+    string keeps its contents; a raw newline, return, or tab in it is written as
+    its escape, which reads as the same string. `::kw` and `::alias/kw` resolve
+    through `reading`, so one keyword gets one name however it is spelled.
+    """
+
+    out: list[str] = []
+    index = 0
+    gap = False
+    while index < len(text):
+        after_gap = _skip_gap(text, index)
+        if after_gap > index:
+            gap, index = True, after_gap
+            continue
+        end = _token_end(text, index)
+        token = text[index:end]
+        if gap and out[-1][-1] not in "([{" and token not in ")]}":
+            out.append(" ")
+        out.append(_spelling(token, reading))
+        gap, index = False, end
+    return "".join(out)
+
+
+def _unit(form: str, base_line: int, span: tuple[int, int], name: str) -> dict:
+    start, end = span
+    first = base_line + form.count("\n", 0, start)
+    last = first + form.count("\n", start, end)
+    return {"name": name, "start_line": first, "end_line": last,
+            "text": form[start:end]}
+
+
+def _conditional_branches(form: str, span: tuple[int, int]) -> list[tuple[int, int]] | None:
+    """The forms of every branch of a reader conditional, or None for any other form.
+
+    `#?(:clj a :cljs b)` gives `a` and `b`; `#?@(:clj [a b])` splices `a` and `b`.
+    """
+
+    splice = form.startswith("#?@", span[0])
+    if not splice and not form.startswith("#?", span[0]):
+        return None
+    opener = _skip_gap(form, span[0] + (3 if splice else 2))
+    if form[opener] != "(":
+        return []
+    branches = _children(form, opener)[1::2]
+    if not splice:
+        return branches
+    return [child for start, _end in branches if form[start] in "([" for child in _children(form, start)]
+
+
+def _expanded(form: str, spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """`spans` with each reader conditional replaced by the forms of all its branches.
+
+    Branches are read in source order, so a method that two branches define is
+    numbered like a repeated method.
+    """
+
+    out = []
+    for span in spans:
+        branches = _conditional_branches(form, span)
+        if branches is None:
+            out.append(span)
+        else:
+            out.extend(_expanded(form, branches))
+    return out
+
+
+def _method_name(form: str, span: tuple[int, int]) -> tuple[str, tuple[int, int]] | None:
+    """The method symbol of a method list, without `^hint` metadata, and its span."""
+
+    children = _children(form, _strip_meta(form, *span)[0])
+    if not children:
+        return None
+    name = _symbol(form, children[0])
+    if name is None:
+        return None
+    return name, children[0]
+
+
+def _method_unit(form, base_line, span, found, prefix, reading):
+    """One method. Its name is blanked from the scored text, so `(when [x] ...)`
+    is not counted as a `when` decision."""
+
+    method, (name_start, name_end) = found
+    unit = _unit(form, base_line, span, reading.claim(f"{prefix}.{method}"))
+    left, right = name_start - span[0], name_end - span[0]
+    unit["text"] = unit["text"][:left] + " " * (right - left) + unit["text"][right:]
+    return unit
+
+
+def _method_units(form, base_line, spans, label, reading, group=None):
+    """A unit for each method list among `spans`, named `label(group).method`.
+
+    A bare symbol starts a new group: the protocol or interface in a type
+    body, or the type in `extend-protocol`. Methods before any group are
+    skipped. Reader conditionals contribute the forms of all their branches.
+    """
+
+    units = []
+    for span in _expanded(form, spans):
+        if not _is_list(form, span):
+            group = _symbol(form, span) or group
+            continue
+        found = _method_name(form, span)
+        if group is not None and found is not None:
+            units.append(_method_unit(form, base_line, span, found, label(group), reading))
+    return units
+
+
+def _anonymous_units(form: str, base_line: int, spans: list, reading: _Reading) -> list[dict]:
+    """Methods of a `reify` or `proxy` that is the value of a top-level `def`.
+
+    The def's var stands for the anonymous type: `var.Interface.method` for a
+    `reify`, `var.method` for a `proxy`, whose methods do not name an interface.
+    """
+
+    var = _symbol(form, spans[1])
+    start, _end = _strip_meta(form, *spans[-1])
+    if var is None or form[start] != "(":
+        return []
+    value = _children(form, start)
+    head = _head(form, value)
+    if head == "reify":
+        return _method_units(form, base_line, value[1:], lambda face: f"{var}.{face}", reading)
+    if head == "proxy":
+        return _method_units(form, base_line, value[3:], lambda _: var, reading, group="")
+    return []
+
+
+def _defmethod_unit(form, base_line, spans, reading):
+    if len(spans) < 3:
+        return []
+    multi = _symbol(form, spans[1])
+    if multi is None:
+        return []
+    start, end = _strip_meta(form, *spans[2])
+    name = reading.claim(f"{multi} {_dispatch_name(form[start:end], reading)}")
+    return [_unit(form, base_line, (0, len(form)), name)]
+
+
+def _form_units(form: str, base_line: int, reading: _Reading) -> list[dict]:
+    """The scored units in one top-level form.
+
+    `defn`, `defn-`, guardrails `>defn` / `>defn-`, and `defmacro` are one unit
+    named for the var. `defmethod` is one unit named `multi dispatch-value`.
+    The methods of `defrecord`, `deftype`, `extend-type`, and `extend-protocol`
+    are one unit each, named `Type.Protocol.method`; those of a `reify` or
+    `proxy` that is a top-level `def` value are named for the var. A `reify`
+    or `proxy` inside a function stays part of that function.
+    """
+
+    name = _defn_name(form)
+    if name is not None:
+        return [{"name": name, "start_line": base_line,
+                 "end_line": base_line + form.count("\n"), "text": form}]
+    spans = _children(form)
+    head = _head(form, spans)
+    if head == "defmethod":
+        return _defmethod_unit(form, base_line, spans, reading)
+    if head in _DEF_HEADS and len(spans) >= 3:
+        return _anonymous_units(form, base_line, spans, reading)
+    return _type_units(form, base_line, head, spans, reading)
+
+
+def _type_units(form: str, base_line: int, head: str | None, spans: list, reading) -> list[dict]:
+    """`Type.Protocol.method` units of a type-defining form, or none for any other form."""
+
+    body = _BODY_START.get(head)
+    owner = _symbol(form, spans[1]) if body is not None and len(spans) >= 2 else None
+    if owner is None:
+        return []
+    if head == "extend-protocol":
+        return _method_units(form, base_line, spans[body:], lambda kind: f"{kind}.{owner}", reading)
+    return _method_units(form, base_line, spans[body:], lambda protocol: f"{owner}.{protocol}", reading)
+
+
 def _remember_form(
-    forms: list[dict], source: str, start: int, start_line: int, end: int, line: int
+    forms: list[dict], source: str, start: int, start_line: int, end: int, reading: _Reading
 ) -> None:
     if source.endswith(("#?", "#?@"), 0, start):
-        forms.extend(_extract_top_level_defns(source[start + 1 : end], start_line))
+        forms.extend(_extract_top_level_defns(source[start + 1 : end], reading, start_line))
         return
-    form_text = source[start : end + 1]
-    name = _defn_name(form_text)
-    if name is None:
-        return
-    forms.append(
-        {
-            "name": name,
-            "start_line": start_line,
-            "end_line": line,
-            "text": form_text,
-        }
-    )
+    forms.extend(_form_units(source[start : end + 1], start_line, reading))
 
 
-def _close_form(forms, source, depth, form_start, form_line, index, line):
+def _close_form(forms, source, depth, form_start, form_line, index, reading):
     if depth == 1 and form_start is not None and form_line is not None:
-        _remember_form(forms, source, form_start, form_line, index, line)
+        _remember_form(forms, source, form_start, form_line, index, reading)
         return 0, None, None
     return max(0, depth - 1), form_start, form_line
 
@@ -398,9 +749,12 @@ def _skip_reader(source: str, index: int, line: int) -> tuple[int, int] | None:
     return None
 
 
-def _extract_top_level_defns(source: str, line: int = 1) -> list[dict]:
-    """Top-level defns. Those inside a reader conditional count from every branch."""
+def _extract_top_level_defns(
+    source: str, reading: _Reading | None = None, line: int = 1
+) -> list[dict]:
+    """Top-level units. Those inside a reader conditional count from every branch."""
 
+    reading = reading or _Reading()
     forms: list[dict] = []
     index = 0
     depth = 0
@@ -419,7 +773,7 @@ def _extract_top_level_defns(source: str, line: int = 1) -> list[dict]:
             depth += 1
         elif ch == ")":
             depth, form_start, form_line = _close_form(
-                forms, source, depth, form_start, form_line, index, line
+                forms, source, depth, form_start, form_line, index, reading
             )
         if ch == "\n":
             line += 1
@@ -427,9 +781,10 @@ def _extract_top_level_defns(source: str, line: int = 1) -> list[dict]:
     return forms
 
 
-def extract_functions(source: str) -> list[dict]:
+def extract_functions(source: str, namespace: str | None = None) -> list[dict]:
+    reading = _Reading(namespace, _ns_aliases(source))
     found = []
-    for form in _extract_top_level_defns(source):
+    for form in _extract_top_level_defns(source, reading):
         found.append(
             {
                 "name": form["name"],
@@ -477,5 +832,5 @@ def functions_in_source(
             path=path,
             language="clojure",
         )
-        for item in extract_functions(source)
+        for item in extract_functions(source, namespace)
     ]

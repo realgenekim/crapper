@@ -78,7 +78,8 @@ Coverage, when it is produced:
   Python       coverage.py LCOV, via pytest or unittest, per project
 
 uml-viewer joins .metrics/crap.edn on :namespace and :name.
-  Clojure      the ns, and the defn name
+  Clojure      the ns, and the defn name, `multi dispatch`, Type.Protocol.method,
+               or var.Interface.method for a top-level reify
   Java         package.Class, and the method name
   Go           import path, or import.path.Receiver for methods
   TypeScript   dotted module path, or module.Class for methods

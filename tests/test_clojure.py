@@ -486,6 +486,27 @@ def test_methods_inside_reader_conditionals_are_units():
     }
 
 
+def test_methods_get_only_the_lines_they_do_not_share():
+    source = (
+        "(deftype T [x] P (a [_] 1)\n"
+        "  (b [_]\n"
+        "    (if x 1 2))\n"
+        "  (c [_]\n"
+        "    3) (d [_] 4))\n"
+    )
+    lines = {
+        item["name"]: (item["start_line"], item["end_line"], item["cover_start"], item["cover_end"])
+        for item in extract_functions(source)
+    }
+    assert lines == {
+        "T.P.a": (1, 1, 1, 1),
+        "T.P.b": (2, 3, 2, 3),
+        "T.P.c": (4, 5, 4, 4),
+        "T.P.d": (5, 5, 5, 5),
+    }
+    assert "cover_start" not in extract_functions("(defn f [] 1)")[0]
+
+
 def test_units_inside_a_top_level_reader_conditional():
     source = (
         "#?(:clj (defmethod m :a [_] 1)\n"

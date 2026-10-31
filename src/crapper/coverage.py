@@ -418,6 +418,14 @@ def parse_jacoco_index(text: str) -> dict[str, list[JacocoMethod]]:
     return found
 
 
+def coverage_lines(function: Function) -> tuple[int, int]:
+    """The lines whose counts score `function`: its own lines unless it records narrower ones."""
+
+    if function.cover_start < 0:
+        return function.start_line, function.end_line
+    return function.cover_start, function.cover_end
+
+
 @dataclass
 class CoverageBundle:
     lcov: dict[str, dict[int, tuple[int, int]]] = field(default_factory=dict)
@@ -457,16 +465,17 @@ class CoverageBundle:
                 function.end_line,
                 self.source_parts,
             )
+        start, end = coverage_lines(function)
         html = self._html_lines(function.path)
         if html is not None:
-            return percent_for_range(html, function.start_line, function.end_line)
+            return percent_for_range(html, start, end)
         record = self._lcov_lines(function.path)
         if record is None:
             return None
-        branched = branch_percent(record, function.start_line, function.end_line)
+        branched = branch_percent(record, start, end)
         if branched is not None:
             return branched
-        return percent_for_range(record, function.start_line, function.end_line)
+        return percent_for_range(record, start, end)
 
     def _html_lines(self, path: str) -> dict[int, tuple[int, int]] | None:
         return _lookup(self.form_html, path, self.source_parts)

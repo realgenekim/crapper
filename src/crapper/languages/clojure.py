@@ -572,7 +572,7 @@ def _unit(form: str, base_line: int, span: tuple[int, int], name: str) -> dict:
     first = base_line + form.count("\n", 0, start)
     last = first + form.count("\n", start, end)
     return {"name": name, "start_line": first, "end_line": last,
-            "text": form[start:end]}
+            "text": form[start:end], "span": span}
 
 
 def _conditional_branches(form: str, span: tuple[int, int]) -> list[tuple[int, int]] | None:
@@ -649,6 +649,51 @@ def _method_units(form, base_line, spans, label, reading, group=None):
         found = _method_name(form, span)
         if group is not None and found is not None:
             units.append(_method_unit(form, base_line, span, found, label(group), reading))
+    return _with_coverage_lines(form, base_line, units)
+
+
+def _foreign_lines(form: str, base_line: int, units: list[dict]) -> set[int]:
+    """Lines where the form has code outside every unit, such as `(defrecord R [x] P`."""
+
+    inside = [False] * len(form)
+    for unit in units:
+        start, end = unit["span"]
+        inside[start:end] = [True] * (end - start)
+    lines = set()
+    line = base_line
+    for index, ch in enumerate(without_strings_and_comments(form)):
+        if ch == "\n":
+            line += 1
+        elif not inside[index] and not ch.isspace() and ch not in ",)]}":
+            lines.add(line)
+    return lines
+
+
+def _with_coverage_lines(form: str, base_line: int, units: list[dict]) -> list[dict]:
+    """Give each method the lines whose coverage counts are its own.
+
+    Cloverage and LCOV count per line, so a line that a method shares with
+    another method, or with the form's own code, cannot be split between
+    them. Such a shared first or last line is left out of the method's
+    coverage. A method with no line of its own (a one-line `deftype`, say)
+    falls back to its whole line range and shares those counts.
+    """
+
+    foreign = _foreign_lines(form, base_line, units)
+
+    def shared(line: int, unit: dict) -> bool:
+        return line in foreign or any(
+            other is not unit and other["start_line"] <= line <= other["end_line"]
+            for other in units
+        )
+
+    for unit in units:
+        first, last = unit["start_line"], unit["end_line"]
+        start = first + 1 if shared(first, unit) else first
+        end = last - 1 if shared(last, unit) else last
+        if start > end:
+            start, end = first, last
+        unit["cover_start"], unit["cover_end"] = start, end
     return units
 
 
@@ -781,18 +826,27 @@ def _extract_top_level_defns(
     return forms
 
 
+_COVER_KEYS = ("cover_start", "cover_end")
+
+
 def extract_functions(source: str, namespace: str | None = None) -> list[dict]:
+    """Units with name, lines, and complexity.
+
+    A method unit also carries `cover_start` / `cover_end`, the lines whose
+    coverage counts are its own (see `_with_coverage_lines`).
+    """
+
     reading = _Reading(namespace, _ns_aliases(source))
     found = []
     for form in _extract_top_level_defns(source, reading):
-        found.append(
-            {
-                "name": form["name"],
-                "start_line": form["start_line"],
-                "end_line": form["end_line"],
-                "complexity": cyclomatic_complexity(form["text"]),
-            }
-        )
+        item = {
+            "name": form["name"],
+            "start_line": form["start_line"],
+            "end_line": form["end_line"],
+            "complexity": cyclomatic_complexity(form["text"]),
+        }
+        item.update({key: form[key] for key in _COVER_KEYS if key in form})
+        found.append(item)
     return found
 
 
@@ -831,6 +885,8 @@ def functions_in_source(
             end_line=item["end_line"],
             path=path,
             language="clojure",
+            cover_start=item.get("cover_start", -1),
+            cover_end=item.get("cover_end", -1),
         )
         for item in extract_functions(source, namespace)
     ]

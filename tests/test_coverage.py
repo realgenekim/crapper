@@ -179,3 +179,22 @@ def test_record_methods_take_coverage_from_their_own_line_range():
     assert bundle.percent_for(units["R.P.miss"]) == 0.0
     assert bundle.percent_for(units["handle :go"]) == 50.0
 
+
+def test_methods_sharing_a_line_do_not_take_each_others_hits():
+    from crapper.languages.clojure import functions_in_source
+
+    source = (
+        "(deftype T [x] P\n"
+        "  (hit [_]\n"
+        "    (if x 1 0)) (miss [_]\n"
+        "    (when x 2))\n"
+        "  (alone [_] 1) (other [_] 2))\n"
+    )
+    units = {f.name: f for f in functions_in_source(source, "src/demo/t.clj", "/proj")}
+    html = {"src/demo/t.clj": {2: (2, 2), 3: (3, 3), 4: (0, 4), 5: (1, 2)}}
+    form_bundle = CoverageBundle(form_html=html)
+    assert form_bundle.percent_for(units["T.P.hit"]) == 100.0
+    assert form_bundle.percent_for(units["T.P.miss"]) == 0.0
+    assert form_bundle.percent_for(units["T.P.alone"]) == 50.0
+    lcov = CoverageBundle(lcov={"src/demo/t.clj": {2: (1, 1), 3: (1, 1), 4: (0, 1)}})
+    assert lcov.percent_for(units["T.P.miss"]) == 0.0

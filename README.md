@@ -57,7 +57,7 @@ Rename or move is a new entry. There is no identity matching across runs.
 
 ## What each language counts
 
-Clojure follows crap4clj: `if` / `when` and their variants, `and`, `or`, `loop`, `catch`, and each clause of `cond`, `condp`, `case`, `cond->`, `cond->>`, `some->`, and `some->>`. Coverage prefers Cloverage's per-line form counts and falls back to LCOV. Units and methods inside reader conditionals (`#?`, `#?@`) count from every branch.
+Clojure follows crap4clj: `if` / `when` and their variants, `and`, `or`, `loop`, `catch`, and each clause of `cond`, `condp`, `case`, `cond->`, `cond->>`, `some->`, and `some->>`. Coverage prefers Cloverage's per-line form counts and falls back to LCOV. Both count per line, so a method that shares its first or last line with another method, or with its form's own code (`(deftype T [x] P (a [_] 1)`), leaves that line out of its score; a method with no line of its own (a one-line `deftype`) is scored on its whole line range, shared with its neighbours. Units and methods inside reader conditionals (`#?`, `#?@`) count from every branch.
 
 Java follows crap4java: `if`, loops, `catch`, `?:`, each `switch` label, and `&&` / `||`. Constructors and methods inside anonymous classes are omitted. Coverage is JaCoCo's `INSTRUCTION` counter.
 

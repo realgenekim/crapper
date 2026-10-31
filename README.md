@@ -46,7 +46,7 @@ uml-viewer groups entries by `:namespace` and joins each operation on `:name`. `
 
 | Language | `:namespace` | `:name` |
 | --- | --- | --- |
-| Clojure | the `ns` | the `defn` / `defn-` / `>defn` / `>defn-` / `defmacro` name; `multi dispatch-value` for a `defmethod`; `Type.method` for each method of a `defrecord`, `deftype`, `extend-type`, `extend-protocol`, or a top-level `def` of a `reify` / `proxy` (a `reify` / `proxy` inside a function stays part of that function) |
+| Clojure | the `ns` | the `defn` / `defn-` / `>defn` / `>defn-` / `defmacro` name; `multi dispatch-value` for a `defmethod`, the dispatch value as written with whitespace, commas and comments outside strings collapsed and `::kw` / `::alias/kw` resolved through the `ns` form (`handle :demo.core/render`, `area [:circle :big]`, `parse #inst "2020"`); `Type.Protocol.method` for each method of a `defrecord`, `deftype`, `extend-type`, or `extend-protocol` (`Doc.Renderer.render`, `String.Shape.area`); `var.Interface.method` for a top-level `def` of a `reify` and `var.method` for a `proxy` (`no-op.Drawable.draw`, `panel.paintComponent`); a name repeated in one file gets `#2`, `#3` in source order (a `reify` / `proxy` inside a function stays part of that function) |
 | Java | `package.Class`, or `package.Outer.Inner` | the method name |
 | Go | the package import path, or `import/path.Receiver` | the function or method name |
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |
@@ -57,7 +57,7 @@ Rename or move is a new entry. There is no identity matching across runs.
 
 ## What each language counts
 
-Clojure follows crap4clj: `if` / `when` and their variants, `and`, `or`, `loop`, `catch`, and each clause of `cond`, `condp`, `case`, `cond->`, `cond->>`, `some->`, and `some->>`. Coverage prefers Cloverage's per-line form counts and falls back to LCOV.
+Clojure follows crap4clj: `if` / `when` and their variants, `and`, `or`, `loop`, `catch`, and each clause of `cond`, `condp`, `case`, `cond->`, `cond->>`, `some->`, and `some->>`. Coverage prefers Cloverage's per-line form counts and falls back to LCOV. Both count per line, so a method that shares its first or last line with another method, or with its form's own code (`(deftype T [x] P (a [_] 1)`), leaves that line out of its score; a method with no line of its own (a one-line `deftype`) is scored on its whole line range, shared with its neighbours. Methods inside reader conditionals (`#?`, `#?@`) count from every branch.
 
 Java follows crap4java: `if`, loops, `catch`, `?:`, each `switch` label, and `&&` / `||`. Constructors and methods inside anonymous classes are omitted. Coverage is JaCoCo's `INSTRUCTION` counter.
 

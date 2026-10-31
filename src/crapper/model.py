@@ -17,6 +17,11 @@ class Function:
     # Mutator uses the span to give a nested handler the sites inside it.
     start_byte: int = -1
     end_byte: int = -1
+    # Lines whose coverage counts belong to this unit, when that is narrower
+    # than start_line..end_line: a Clojure method that shares its first or last
+    # line with other code leaves that line out. -1 means use the line range.
+    cover_start: int = -1
+    cover_end: int = -1
 
 
 @dataclass(frozen=True)

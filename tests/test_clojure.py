@@ -196,7 +196,7 @@ def test_guardrails_defn_and_defmacro_are_units():
     assert found == {"get-page": 2, "hidden": 2, "timed": 1}
 
 
-def test_record_and_type_methods_are_type_dot_method():
+def test_record_and_type_methods_are_type_protocol_method():
     source = (
         "(ns demo.render)\n"
         "(defrecord Doc [handle items]\n"
@@ -214,10 +214,10 @@ def test_record_and_type_methods_are_type_dot_method():
     )
     found = functions_in_source(source, "src/demo/render.clj", "/proj")
     assert [(f.name, f.complexity, f.start_line, f.end_line) for f in found] == [
-        ("Doc.render", 3, 5, 7),
-        ("Doc.title", 1, 8, 8),
-        ("Doc.close", 1, 10, 10),
-        ("Box.deref", 2, 13, 13),
+        ("Doc.Renderer.render", 3, 5, 7),
+        ("Doc.Renderer.title", 1, 8, 8),
+        ("Doc.java.io.Closeable.close", 1, 10, 10),
+        ("Box.clojure.lang.IDeref.deref", 2, 13, 13),
     ]
     assert {f.namespace for f in found} == {"demo.render"}
 
@@ -236,14 +236,14 @@ def test_extend_type_and_extend_protocol_methods():
     )
     found = {item["name"]: (item["complexity"], item["start_line"]) for item in extract_functions(source)}
     assert found == {
-        "String.area": (2, 3),
-        "nil.area": (1, 6),
-        "java.util.List.area": (1, 8),
-        "java.util.List.perimeter": (2, 9),
+        "String.Shape.area": (2, 3),
+        "nil.Shape.area": (1, 6),
+        "java.util.List.Shape.area": (1, 8),
+        "java.util.List.Shape.perimeter": (2, 9),
     }
 
 
-def test_reify_and_proxy_methods_count_where_they_live():
+def test_reify_and_proxy_methods_are_named_for_their_var():
     source = (
         "(def ^:private no-op\n"
         "  (reify Drawable\n"
@@ -258,9 +258,9 @@ def test_reify_and_proxy_methods_count_where_they_live():
     )
     found = {item["name"]: (item["complexity"], item["start_line"]) for item in extract_functions(source)}
     assert found == {
-        "Drawable.draw": (2, 3),
-        "Drawable.draw#2": (1, 4),
-        "JPanel.paintComponent": (2, 7),
+        "no-op.Drawable.draw": (2, 3),
+        "no-op.Drawable.draw#2": (1, 4),
+        "panel.paintComponent": (2, 7),
         "make": (2, 8),
     }
 
@@ -269,13 +269,15 @@ def test_child_end_spans_each_dispatch_and_prefix_form():
     from crapper.languages.clojure import _child_end
 
     for form in ('#{1 2}', '#(inc %)', '#"a\\"b"', "#:ns{:a 1}", "#?(:clj 1)",
-                 "#inst", "^:m [x]", "'(a b)", "~@xs"):
+                 '#inst "2020"', "#my/tag [1 2]", "##Inf", "^:m [x]", "'(a b)",
+                 "~@xs", "sym", ":k"):
         assert _child_end(f"{form} tail", 0) == len(form), form
+        assert _child_end(f"{form}, tail", 0) == len(form), form
     assert _child_end("", 0) == 0
 
 
-def _names(source):
-    return {item["name"]: item["complexity"] for item in extract_functions(source)}
+def _names(source, namespace=None):
+    return {item["name"]: item["complexity"] for item in extract_functions(source, namespace)}
 
 
 def test_discarded_and_empty_forms_inside_a_type_are_not_methods():
@@ -283,13 +285,14 @@ def test_discarded_and_empty_forms_inside_a_type_are_not_methods():
         "(deftype T [] P\n"
         "  #_(skipped [x] (if x 1 0))\n"
         "  ()\n"
+        "  (\"text\" [x] 1)\n"
         "  (kept [x] (when x 1)))\n"
         "()\n"
     )
-    assert _names(source) == {"T.kept": 2}
+    assert _names(source) == {"T.P.kept": 2}
 
 
-def test_extend_protocol_ignores_methods_before_a_type_and_non_symbol_types():
+def test_methods_before_any_protocol_or_type_are_skipped():
     source = (
         "(extend-protocol P\n"
         "  (orphan [x] 1)\n"
@@ -297,32 +300,155 @@ def test_extend_protocol_ignores_methods_before_a_type_and_non_symbol_types():
         "  (also-orphan [x] 2)\n"
         "  String\n"
         "  (m [x] 3))\n"
+        "(defrecord R [] (orphan [_] 1) Q (m [_] 2))\n"
+        "(def r (reify (orphan [x] 1) Foo (m [x] (if x 1 0))))\n"
     )
-    assert _names(source) == {"String.m": 1}
+    assert _names(source) == {"String.P.m": 1, "R.Q.m": 1, "r.Foo.m": 2}
+
+
+def test_type_forms_without_a_symbol_owner_have_no_units():
+    for source in ('(defrecord "R" [] P (m [_] 1))', "(extend-type)",
+                   "(extend-protocol :p String (m [_] 1))", "(deftype T)"):
+        assert _names(source) == {}, source
 
 
 def test_repeated_method_names_get_numbered_suffixes():
     source = "(extend-type String P (m [x] 1) (m [x y] (if x 1 0)))"
-    assert _names(source) == {"String.m": 1, "String.m#2": 2}
-
-
-def test_proxy_without_a_symbol_in_its_class_vector_has_no_units():
-    for head in ("Foo", "[]", "[:k]"):
-        source = f"(def p (proxy {head} [] (m [x] 1)))"
-        assert _names(source) == {}, head
-    assert _names("(def p (proxy [:k Foo] [] (m [x] 1)))") == {"Foo.m": 1}
+    assert _names(source) == {"String.P.m": 1, "String.P.m#2": 2}
 
 
 def test_def_value_that_is_not_reify_or_proxy_has_no_units():
     assert _names("(def x (foo 1 2))") == {}
+    assert _names("(def x :k)") == {}
+    assert _names('(def "x" (reify P (m [_] 1)))') == {}
     assert _names("(def p (proxy [Foo]))") == {}
-
-
-def test_reify_skips_methods_that_precede_any_interface():
-    source = "(def r (reify (orphan [x] 1) Foo (m [x] (if x 1 0))))"
-    assert _names(source) == {"Foo.m": 2}
+    assert _names("(def p (proxy Foo [] (m [x] 1)))") == {"p.m": 1}
 
 
 def test_defmethod_needs_a_symbol_multimethod_and_a_dispatch_value():
     assert _names("(defmethod area)") == {}
     assert _names('(defmethod "area" :a [x] 1)') == {}
+
+
+def test_string_dispatch_values_keep_their_contents():
+    source = (
+        '(defmethod m "a b" [_] 1)\n'
+        '(defmethod m "a  b" [_] 2)\n'
+        '(defmethod m "a\n  b" [_] 3)\n'
+        '(defmethod m "a\\n  b" [_] 4)\n'
+        '(defmethod m "x;y,z" [_] 5)\n'
+    )
+    assert list(_names(source)) == [
+        'm "a b"', 'm "a  b"', 'm "a\\n  b"', 'm "a\\n  b"#2', 'm "x;y,z"',
+    ]
+
+
+def test_dispatch_whitespace_commas_and_comments_are_normalized_outside_strings():
+    source = (
+        "(defmethod m [:a, :b] [_] 1)\n"
+        "(defmethod m [ :a\n   :b ] [_] 2)\n"
+        "(defmethod m [:a ; note\n :b #_:c] [_] 3)\n"
+        "(defmethod m #{\\a \\space} [_] 4)\n"
+    )
+    assert list(_names(source)) == [
+        "m [:a :b]", "m [:a :b]#2", "m [:a :b]#3", "m #{\\a \\space}",
+    ]
+
+
+def test_tagged_literal_dispatch_keeps_its_payload():
+    source = '(defmethod m #inst "2020" [_] 1)\n(defmethod m #my/tag [1  2] [x] (if x 1 0))\n'
+    assert _names(source) == {'m #inst "2020"': 1, "m #my/tag [1 2]": 2}
+
+
+def test_duplicate_defmethods_are_numbered_like_repeated_methods():
+    assert _names("(defmethod m :a [_] 1)\n(defmethod m :a [_] 2)") == {"m :a": 1, "m :a#2": 1}
+
+
+def test_auto_resolved_keywords_resolve_to_one_name():
+    source = (
+        "(ns demo.core\n"
+        "  (:require [demo.other :as o]\n"
+        "            [demo.spec :refer [x] :as-alias sp]\n"
+        "            (demo [util :as u])\n"
+        "            [plain.lib]\n"
+        "            [] plain.sym))\n"
+        "(defmethod m ::k [_] 1)\n"
+        "(defmethod m :demo.core/k [_] 2)\n"
+        "(defmethod m ::o/k [_] 3)\n"
+        "(defmethod m [::sp/k ::u/k] [_] 4)\n"
+        "(defmethod m ::nope/k [_] 5)\n"
+    )
+    assert list(_names(source, "demo.core")) == [
+        "m :demo.core/k", "m :demo.core/k#2", "m :demo.other/k",
+        "m [:demo.spec/k :demo.util/k]", "m ::nope/k",
+    ]
+    assert list(_names("(defmethod m ::k [_] 1)")) == ["m ::k"]
+    assert list(_names("(ns a.b)\n(defmethod m ::o/k [_] 1)", "a.b")) == ["m ::o/k"]
+    assert list(_names("(ns)\n(defmethod m :k [_] 1)")) == ["m :k"]
+
+
+def test_top_level_reify_and_proxy_of_different_vars_do_not_collide():
+    source = (
+        "(def a (reify P (m [_] 1)))\n(def b (reify P (m [_] 2)))\n"
+        "(def c (proxy [Foo] [] (m [] 1)))\n(def d (proxy [Foo] [] (m [] 2)))\n"
+    )
+    assert list(_names(source)) == ["a.P.m", "b.P.m", "c.m", "d.m"]
+
+
+def test_same_method_of_different_protocols_does_not_collide():
+    source = (
+        "(defrecord R [] P (m [_] 1) Q (m [_] 2))\n"
+        "(extend-type String P (m [_] 1))\n"
+        "(extend-type String Q (m [_] 2))\n"
+    )
+    assert list(_names(source)) == ["R.P.m", "R.Q.m", "String.P.m", "String.Q.m"]
+
+
+def test_type_hints_and_metadata_stay_out_of_method_names():
+    source = (
+        "(defrecord R [] P (^String m [_] 1))\n"
+        "(deftype T [] P (^{:tag String} m [_] 1) ^:x (n [_] 2))\n"
+    )
+    assert list(_names(source)) == ["R.P.m", "T.P.m", "T.P.n"]
+
+
+def test_method_names_are_not_counted_as_decisions():
+    source = "(defrecord R [] P (when [_] 1) (or [_] (if x 1 2)) (catch [_] (and a b)))"
+    assert _names(source) == {"R.P.when": 1, "R.P.or": 2, "R.P.catch": 2}
+
+
+def test_methods_inside_reader_conditionals_are_units():
+    source = (
+        "(deftype T [] P\n"
+        "  #?(:clj (m [_] 1))\n"
+        "  #?@(:clj [Q (n [_] (if x 1 0))])\n"
+        "  #?(:clj (o [_] 1) :cljs (o [_] 2))\n"
+        "  #?@(:clj sym)\n"
+        "  #?x)\n"
+        "(def r (reify #?@(:clj [Runnable (run [_] 1)] :cljs [IFn (-invoke [_] 2)])))\n"
+    )
+    assert _names(source) == {
+        "T.P.m": 1, "T.Q.n": 2, "T.Q.o": 1, "T.Q.o#2": 1,
+        "r.Runnable.run": 1, "r.IFn.-invoke": 1,
+    }
+
+
+def test_methods_get_only_the_lines_they_do_not_share():
+    source = (
+        "(deftype T [x] P (a [_] 1)\n"
+        "  (b [_]\n"
+        "    (if x 1 2))\n"
+        "  (c [_]\n"
+        "    3) (d [_] 4))\n"
+    )
+    lines = {
+        item["name"]: (item["start_line"], item["end_line"], item["cover_start"], item["cover_end"])
+        for item in extract_functions(source)
+    }
+    assert lines == {
+        "T.P.a": (1, 1, 1, 1),
+        "T.P.b": (2, 3, 2, 3),
+        "T.P.c": (4, 5, 4, 4),
+        "T.P.d": (5, 5, 5, 5),
+    }
+    assert "cover_start" not in extract_functions("(defn f [] 1)")[0]

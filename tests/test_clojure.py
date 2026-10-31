@@ -219,3 +219,12 @@ def test_string_and_character_clauses_count():
     assert cyclomatic_complexity('(defn f [x] (cond (a) "x" (b) "y" :else "z"))') == 4
     assert cyclomatic_complexity("(defn f [c] (case c \\a 1 \\( 2 :other))") == 4
     assert cyclomatic_complexity('(defn f [x] (condp = x "a" 1 "b\n c" 2))') == 3
+
+
+def test_a_discard_drops_the_whole_dispatch_form_after_it():
+    for dropped in ("#(if x 1 0)", "#{(if x 1 0)}", '#"re"', "#(when x 1)"):
+        assert cyclomatic_complexity(f"(defn f [x] #_{dropped} x)") == 1
+        assert cyclomatic_complexity(f"(defn f [x] #_ {dropped} x)") == 1
+    names = [item["name"] for item in extract_functions("#_ #{(defn a [] 1)}\n(defn b [] 1)")]
+    assert names == ["b"]
+    assert cyclomatic_complexity("(defn f [x] #_#(if x 1 0) (if x 1 0))") == 2

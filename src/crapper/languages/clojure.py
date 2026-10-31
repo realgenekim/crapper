@@ -29,6 +29,7 @@ _FORM_SKIP = {
 }
 _THREAD_FORMS = {"some->", "some->>"}
 _CHAR_DELIMITERS = set("()[]{}\";,")
+_DISPATCH_OPENERS = ("(", "[", "{", '"')
 _PREFIXES = ("#?@", "#?", "#'", "'", "`", "~", "@")
 
 
@@ -114,6 +115,8 @@ def _end_of_one_form(source: str, index: int) -> int:
         return _form_end(source, _form_end(source, index + 2))
     if ch == "^":
         return _form_end(source, _form_end(source, index + 1))
+    if ch == "#" and source[index + 1 : index + 2] in _DISPATCH_OPENERS:
+        return _end_of_one_form(source, index + 1)
     after = _after_prefix(source, index)
     if after is not None:
         return _form_end(source, after)

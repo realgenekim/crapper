@@ -287,8 +287,15 @@ def _keyword_ends(form: str, after: int) -> bool:
     return after >= len(form) or form[after] in _NAME_STOP
 
 
+_DEFN_HEADS = ("defn", "defn-", ">defn", ">defn-", "defmacro")
+_TYPE_HEADS = ("defrecord", "deftype")
+_DEF_HEADS = ("def", "defonce")
+_ANON_HEADS = ("reify", "proxy")
+_PREFIXES = ("#?@", "~@", "#?", "#'", "#=", "'", "`", "~", "@")
+
+
 def _defn_keyword_end(form: str, index: int) -> int | None:
-    for candidate in ("defn-", "defn"):
+    for candidate in sorted(_DEFN_HEADS, key=len, reverse=True):
         after = index + len(candidate)
         if form.startswith(candidate, index) and _keyword_ends(form, after):
             return after
@@ -331,21 +338,230 @@ def _defn_name(form: str) -> str | None:
     return _read_name(form, _skip_leading_metadata(form, keyword_at))
 
 
+def _skip_gap(text: str, index: int) -> int:
+    """Skip whitespace, commas, comments, and `#_` discarded forms."""
+
+    while index < len(text):
+        ch = text[index]
+        if ch.isspace() or ch == ",":
+            index += 1
+        elif ch == ";":
+            while index < len(text) and text[index] != "\n":
+                index += 1
+        elif text.startswith("#_", index):
+            index = _child_end(text, _skip_gap(text, index + 2))
+        else:
+            return index
+    return index
+
+
+def _child_end(text: str, index: int) -> int:
+    """End of one reader form, including reader prefixes and `^meta`."""
+
+    if index >= len(text):
+        return index
+    if text[index] == "^":
+        return _child_end(text, _skip_gap(text, _child_end(text, index + 1)))
+    for prefix in _PREFIXES:
+        if text.startswith(prefix, index):
+            return _child_end(text, _skip_gap(text, index + len(prefix)))
+    if text.startswith("#{", index) or text.startswith("#(", index):
+        return _balanced_end(text, index + 1)
+    if text.startswith('#"', index):
+        return _consume_string(text, index + 1, 1)[0]
+    if text.startswith("#:", index) or text.startswith("#?", index):
+        index = _end_of_atom(text, index + 1)
+        return _child_end(text, index)
+    return _end_of_one_form(text, index)
+
+
+def _children(form: str, start: int = 0) -> list[tuple[int, int]]:
+    """Spans of the forms directly inside the list that opens at `start`."""
+
+    spans = []
+    index = start + 1
+    while True:
+        index = _skip_gap(form, index)
+        if index >= len(form) or form[index] in ")]}":
+            return spans
+        end = _child_end(form, index)
+        if end <= index:
+            return spans
+        spans.append((index, end))
+        index = end
+
+
+def _head(form: str, spans: list[tuple[int, int]]) -> str | None:
+    if not spans:
+        return None
+    start, end = spans[0]
+    return form[start:end]
+
+
+def _strip_meta(form: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and form[start] == "^":
+        start = _skip_gap(form, _child_end(form, start + 1))
+    return start, end
+
+
+def _symbol(form: str, span: tuple[int, int]) -> str | None:
+    start, end = _strip_meta(form, *span)
+    text = form[start:end]
+    if not text or text[0] in "([{\"\\:#'`~@^":
+        return None
+    return text
+
+
+def _is_list(form: str, span: tuple[int, int]) -> bool:
+    start, end = _strip_meta(form, *span)
+    return start < end and form[start] == "("
+
+
+def _unit(form: str, base_line: int, span: tuple[int, int], name: str) -> dict:
+    start, end = span
+    first = base_line + form.count("\n", 0, start)
+    last = first + form.count("\n", start, end)
+    return {"name": name, "start_line": first, "end_line": last, "text": form[start:end]}
+
+
+def _method_units(form, base_line, spans, type_name, protocols_are_types=False):
+    """`Type.method` units for the method lists among `spans`.
+
+    In `extend-protocol` the bare symbols name the type that the following
+    methods extend; elsewhere they name a protocol or interface and the type
+    stays `type_name`. A repeated name gets `#2`, `#3`, as overloads do.
+    """
+
+    units = []
+    current = type_name
+    seen: dict[str, int] = {}
+    for span in spans:
+        if _is_list(form, span):
+            if current is None:
+                continue
+            method = _head(form, _children(form, _strip_meta(form, *span)[0]))
+            if method is None:
+                continue
+            name = f"{current}.{method}"
+            seen[name] = seen.get(name, 0) + 1
+            if seen[name] > 1:
+                name = f"{name}#{seen[name]}"
+            units.append(_unit(form, base_line, span, name))
+        elif protocols_are_types:
+            symbol = _symbol(form, span)
+            if symbol is not None:
+                current = symbol
+    return units
+
+
+def _first_symbol_in_vector(form: str, span: tuple[int, int]) -> str | None:
+    start, _end = _strip_meta(form, *span)
+    if form[start] != "[":
+        return None
+    for child in _children(form, start):
+        symbol = _symbol(form, child)
+        if symbol is not None:
+            return symbol
+    return None
+
+
+def _anonymous_units(form: str, base_line: int, span: tuple[int, int]) -> list[dict]:
+    """Methods of a `reify` or `proxy` that is the value of a top-level `def`."""
+
+    start, _end = _strip_meta(form, *span)
+    if form[start] != "(":
+        return []
+    spans = _children(form, start)
+    head = _head(form, spans)
+    if head == "reify":
+        units = []
+        current = None
+        for child in spans[1:]:
+            if _is_list(form, child):
+                if current is not None:
+                    units.extend(_method_units(form, base_line, [child], current))
+            else:
+                current = _symbol(form, child) or current
+        return _renumber(units)
+    if head == "proxy" and len(spans) >= 3:
+        type_name = _first_symbol_in_vector(form, spans[1])
+        if type_name is None:
+            return []
+        return _method_units(form, base_line, spans[3:], type_name)
+    return []
+
+
+def _renumber(units: list[dict]) -> list[dict]:
+    seen: dict[str, int] = {}
+    for unit in units:
+        seen[unit["name"]] = seen.get(unit["name"], 0) + 1
+        if seen[unit["name"]] > 1:
+            unit["name"] = f"{unit['name']}#{seen[unit['name']]}"
+    return units
+
+
+def _dispatch_name(text: str, namespace: str | None) -> str:
+    text = " ".join(text.split())
+    if namespace and text.startswith("::") and "/" not in text:
+        return f":{namespace}/{text[2:]}"
+    return text
+
+
+def _defmethod_unit(form, base_line, spans, namespace):
+    if len(spans) < 3:
+        return []
+    multi = _symbol(form, spans[1])
+    if multi is None:
+        return []
+    start, end = _strip_meta(form, *spans[2])
+    dispatch = _dispatch_name(form[start:end], namespace)
+    return [_unit(form, base_line, (0, len(form)), f"{multi} {dispatch}")]
+
+
+def _form_units(form: str, base_line: int, namespace: str | None = None) -> list[dict]:
+    """The scored units in one top-level form.
+
+    `defn`, `defn-`, guardrails `>defn` / `>defn-`, and `defmacro` are one unit
+    named for the var. `defmethod` is one unit named `multi dispatch-value`.
+    The methods of `defrecord`, `deftype`, `extend-type`, `extend-protocol`,
+    and of a `reify` or `proxy` that is a top-level `def` value, are one unit
+    each, named `Type.method`. A `reify` or `proxy` inside a function stays
+    part of that function.
+    """
+
+    if not form.startswith("("):
+        return []
+    name = _defn_name(form)
+    if name is not None:
+        return [{"name": name, "start_line": base_line,
+                 "end_line": base_line + form.count("\n"), "text": form}]
+    spans = _children(form)
+    head = _head(form, spans)
+    if head == "defmethod":
+        return _defmethod_unit(form, base_line, spans, namespace)
+    if head in _TYPE_HEADS and len(spans) >= 3:
+        type_name = _symbol(form, spans[1])
+        return _method_units(form, base_line, spans[3:], type_name)
+    if head == "extend-type" and len(spans) >= 2:
+        return _method_units(form, base_line, spans[2:], _symbol(form, spans[1]))
+    if head == "extend-protocol" and len(spans) >= 2:
+        return _method_units(form, base_line, spans[2:], None, protocols_are_types=True)
+    if head in _DEF_HEADS and len(spans) >= 3:
+        return _anonymous_units(form, base_line, spans[-1])
+    return []
+
+
 def _remember_form(
     forms: list[dict], source: str, start: int, start_line: int, end: int, line: int
 ) -> None:
-    form_text = source[start : end + 1]
-    name = _defn_name(form_text)
-    if name is None:
-        return
-    forms.append(
-        {
-            "name": name,
-            "start_line": start_line,
-            "end_line": line,
-            "text": form_text,
-        }
-    )
+    namespace = getattr(forms, "namespace", None)
+    forms.extend(_form_units(source[start : end + 1], start_line, namespace))
+
+
+class _Units(list):
+    """The unit list, carrying the namespace that resolves `::keyword` dispatch values."""
+
+    namespace: str | None = None
 
 
 def _close_form(forms, source, depth, form_start, form_line, index, line):
@@ -369,8 +585,9 @@ def _skip_reader(source: str, index: int, line: int) -> tuple[int, int] | None:
     return None
 
 
-def _extract_top_level_defns(source: str) -> list[dict]:
-    forms: list[dict] = []
+def _extract_top_level_defns(source: str, namespace: str | None = None) -> list[dict]:
+    forms = _Units()
+    forms.namespace = namespace
     index = 0
     line = 1
     depth = 0
@@ -397,9 +614,9 @@ def _extract_top_level_defns(source: str) -> list[dict]:
     return forms
 
 
-def extract_functions(source: str) -> list[dict]:
+def extract_functions(source: str, namespace: str | None = None) -> list[dict]:
     found = []
-    for form in _extract_top_level_defns(source):
+    for form in _extract_top_level_defns(source, namespace):
         found.append(
             {
                 "name": form["name"],
@@ -447,5 +664,5 @@ def functions_in_source(
             path=path,
             language="clojure",
         )
-        for item in extract_functions(source)
+        for item in extract_functions(source, namespace)
     ]

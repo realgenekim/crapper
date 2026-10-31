@@ -166,3 +166,100 @@ def test_reader_keeps_the_real_namespace_name_and_decisions():
     assert extract_functions("#_(defn dropped [] (if x 1 0))\n(defn kept [] 1)\n") == [
         {"name": "kept", "start_line": 2, "end_line": 2, "complexity": 1}
     ]
+
+
+def test_defmethod_is_one_unit_named_for_multi_and_dispatch_value():
+    source = (
+        "(ns demo.core)\n"
+        "(defmulti handle-event :type)\n"
+        "(defmethod handle-event ::render [e]\n"
+        "  (if (:page e) (when (pos? (:page e)) 1) 0))\n"
+        "(defmethod handle-event :default [_] nil)\n"
+        "(defmethod ^:private other/area [:circle :big]\n"
+        "  [s] (* 3 s))\n"
+    )
+    found = functions_in_source(source, "src/demo/core.clj", "/proj")
+    assert [(f.name, f.complexity, f.start_line, f.end_line) for f in found] == [
+        ("handle-event :demo.core/render", 3, 3, 4),
+        ("handle-event :default", 1, 5, 5),
+        ("other/area [:circle :big]", 1, 6, 7),
+    ]
+
+
+def test_guardrails_defn_and_defmacro_are_units():
+    source = (
+        "(>defn get-page [] [=> int?] (or (:page @s) 0))\n"
+        "(>defn- hidden [x] [int? => int?]\n  (if x 1 0))\n"
+        "(defmacro timed [& body]\n  `(let [t0# 1] ~@body))\n"
+    )
+    found = {item["name"]: item["complexity"] for item in extract_functions(source)}
+    assert found == {"get-page": 2, "hidden": 2, "timed": 1}
+
+
+def test_record_and_type_methods_are_type_dot_method():
+    source = (
+        "(ns demo.render)\n"
+        "(defrecord Doc [handle items]\n"
+        "  ;; protocol\n"
+        "  Renderer\n"
+        "  (render [this n]\n"
+        "    (when (< n (count items))\n"
+        "      (if (pos? n) :a :b)))\n"
+        "  (title [_ n] \"(if x)\")\n"
+        "  java.io.Closeable\n"
+        "  (close [_] (.close handle)))\n"
+        "(deftype Box [v]\n"
+        "  clojure.lang.IDeref\n"
+        "  (deref [_] (or v 0)))\n"
+    )
+    found = functions_in_source(source, "src/demo/render.clj", "/proj")
+    assert [(f.name, f.complexity, f.start_line, f.end_line) for f in found] == [
+        ("Doc.render", 3, 5, 7),
+        ("Doc.title", 1, 8, 8),
+        ("Doc.close", 1, 10, 10),
+        ("Box.deref", 2, 13, 13),
+    ]
+    assert {f.namespace for f in found} == {"demo.render"}
+
+
+def test_extend_type_and_extend_protocol_methods():
+    source = (
+        "(extend-type String\n"
+        "  Shape\n"
+        "  (area [s] (if (empty? s) 0 1)))\n"
+        "(extend-protocol Shape\n"
+        "  nil\n"
+        "  (area [_] 0)\n"
+        "  java.util.List\n"
+        "  (area [xs] (count xs))\n"
+        "  (perimeter [xs] (when (seq xs) 1)))\n"
+    )
+    found = {item["name"]: (item["complexity"], item["start_line"]) for item in extract_functions(source)}
+    assert found == {
+        "String.area": (2, 3),
+        "nil.area": (1, 6),
+        "java.util.List.area": (1, 8),
+        "java.util.List.perimeter": (2, 9),
+    }
+
+
+def test_reify_and_proxy_methods_count_where_they_live():
+    source = (
+        "(def ^:private no-op\n"
+        "  (reify Drawable\n"
+        "    (draw [_ g] (when g 1))\n"
+        "    (draw [_ g x] nil)))\n"
+        "(defonce panel\n"
+        "  (proxy [JPanel Runnable] []\n"
+        "    (paintComponent [g] (if g 1 0))))\n"
+        "(defn make []\n"
+        "  (reify Runnable (run [_] (if a 1 0))))\n"
+        "(def plain {:a 1})\n"
+    )
+    found = {item["name"]: (item["complexity"], item["start_line"]) for item in extract_functions(source)}
+    assert found == {
+        "Drawable.draw": (2, 3),
+        "Drawable.draw#2": (1, 4),
+        "JPanel.paintComponent": (2, 7),
+        "make": (2, 8),
+    }

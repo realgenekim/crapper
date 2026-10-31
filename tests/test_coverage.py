@@ -158,3 +158,23 @@ def test_load_bundle_merges_each_report(tmp_path):
     assert bundle.percent_for(function(start_line=3, end_line=4)) == 50.0
     assert bundle.go_profile is not None
     assert bundle.jacoco is not None
+
+
+def test_record_methods_take_coverage_from_their_own_line_range():
+    from crapper.languages.clojure import functions_in_source
+
+    source = (
+        "(ns demo.core)\n"
+        "(defrecord R [x]\n"
+        "  P\n"
+        "  (hit [_] (if x 1 0))\n"
+        "  (miss [_] (when x 2)))\n"
+        "(defmethod handle :go [e]\n"
+        "  (if e 1 0))\n"
+    )
+    units = {f.name: f for f in functions_in_source(source, "src/demo/core.clj", "/proj")}
+    html = {"src/demo/core.clj": {4: (2, 2), 5: (0, 3), 6: (1, 1), 7: (1, 3)}}
+    bundle = CoverageBundle(form_html=html)
+    assert bundle.percent_for(units["R.hit"]) == 100.0
+    assert bundle.percent_for(units["R.miss"]) == 0.0
+    assert bundle.percent_for(units["handle :go"]) == 50.0

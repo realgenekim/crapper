@@ -46,7 +46,7 @@ uml-viewer groups entries by `:namespace` and joins each operation on `:name`. `
 
 | Language | `:namespace` | `:name` |
 | --- | --- | --- |
-| Clojure | the `ns` | the `defn` / `defn-` name |
+| Clojure | the `ns` | the `defn` / `defn-` / `>defn` / `>defn-` / `defmacro` name; `multi dispatch-value` for a `defmethod`; `Type.method` for each method of a `defrecord`, `deftype`, `extend-type`, `extend-protocol`, or a top-level `def` of a `reify` / `proxy` (a `reify` / `proxy` inside a function stays part of that function) |
 | Java | `package.Class`, or `package.Outer.Inner` | the method name |
 | Go | the package import path, or `import/path.Receiver` | the function or method name |
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |

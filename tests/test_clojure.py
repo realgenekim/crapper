@@ -182,3 +182,12 @@ def test_a_discard_drops_the_form_after_a_prefix():
         assert [item["name"] for item in extract_functions(source)] == ["b"], prefix
     assert cyclomatic_complexity("(defn f [x] #_'(if x 1 0) x)") == 1
     assert extract_functions("#_^") == []
+
+
+def test_clojure_core_qualified_defn_is_a_function():
+    source = "(clojure.core/defn a [x] (if x 1 0))\n(clojure.core/defn- b [] 2)\n(s/defn c [] 3)"
+    assert [(item["name"], item["complexity"]) for item in extract_functions(source)] == [
+        ("a", 2),
+        ("b", 1),
+    ]
+    assert extract_functions("(clojure.core/defnx d [] 1)") == []

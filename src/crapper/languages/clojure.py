@@ -303,6 +303,8 @@ def _keyword_ends(form: str, after: int) -> bool:
 
 
 def _defn_keyword_end(form: str, index: int) -> int | None:
+    if form.startswith("clojure.core/", index):
+        index += len("clojure.core/")
     for candidate in ("defn-", "defn"):
         after = index + len(candidate)
         if form.startswith(candidate, index) and _keyword_ends(form, after):

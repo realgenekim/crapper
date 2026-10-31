@@ -174,3 +174,11 @@ def test_a_discard_of_a_discard_drops_two_forms():
     source = "#_ #_ #_ (defn a [] 1) (defn b [] 2) (defn c [] 3) (defn d [] 4)"
     assert [item["name"] for item in extract_functions(source)] == ["d"]
     assert cyclomatic_complexity("(defn f [x] #_#_(if x 1 0) (when x 1) x)") == 1
+
+
+def test_a_discard_drops_the_form_after_a_prefix():
+    for prefix in ("^:x ", "^{:x 1} ", "'", "`", "~", "~@", "@", "#'", "^:x ^:y '"):
+        source = f"#_{prefix}(defn a [] 1)\n(defn b [] 2)"
+        assert [item["name"] for item in extract_functions(source)] == ["b"], prefix
+    assert cyclomatic_complexity("(defn f [x] #_'(if x 1 0) x)") == 1
+    assert extract_functions("#_^") == []

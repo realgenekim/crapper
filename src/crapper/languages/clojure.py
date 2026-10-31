@@ -29,6 +29,7 @@ _FORM_SKIP = {
 }
 _THREAD_FORMS = {"some->", "some->>"}
 _CHAR_DELIMITERS = set("()[]{}\";,")
+_PREFIXES = ("#'", "'", "`", "~", "@")
 
 
 def _blank_span(source: str, start: int, end: int, out: list[str]) -> None:
@@ -104,7 +105,21 @@ def _end_of_one_form(source: str, index: int) -> int:
         return _char_literal_end(source, index)
     if source.startswith("#_", index):
         return _form_end(source, _form_end(source, index + 2))
+    if ch == "^":
+        return _form_end(source, _form_end(source, index + 1))
+    after = _after_prefix(source, index)
+    if after is not None:
+        return _form_end(source, after)
     return _end_of_atom(source, index)
+
+
+def _after_prefix(source: str, index: int) -> int | None:
+    """Index after a quote, syntax-quote, unquote, deref, or var prefix, if one is here."""
+
+    for prefix in _PREFIXES:
+        if source.startswith(prefix, index):
+            return index + len(prefix)
+    return None
 
 
 def _form_end(source: str, index: int) -> int:

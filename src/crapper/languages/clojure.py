@@ -365,13 +365,20 @@ def _child_end(text: str, index: int) -> int:
     for prefix in _PREFIXES:
         if text.startswith(prefix, index):
             return _child_end(text, _skip_gap(text, index + len(prefix)))
+    if text[index] == "#":
+        return _dispatch_end(text, index)
+    return _end_of_one_form(text, index)
+
+
+def _dispatch_end(text: str, index: int) -> int:
+    """End of a `#`-dispatch form: set, anonymous fn, regex, namespaced map, conditional."""
+
     if text.startswith("#{", index) or text.startswith("#(", index):
         return _balanced_end(text, index + 1)
     if text.startswith('#"', index):
         return _consume_string(text, index + 1, 1)[0]
     if text.startswith("#:", index) or text.startswith("#?", index):
-        index = _end_of_atom(text, index + 1)
-        return _child_end(text, index)
+        return _child_end(text, _end_of_atom(text, index + 1))
     return _end_of_one_form(text, index)
 
 
@@ -474,21 +481,24 @@ def _anonymous_units(form: str, base_line: int, span: tuple[int, int]) -> list[d
     spans = _children(form, start)
     head = _head(form, spans)
     if head == "reify":
-        units = []
-        current = None
-        for child in spans[1:]:
-            if _is_list(form, child):
-                if current is not None:
-                    units.extend(_method_units(form, base_line, [child], current))
-            else:
-                current = _symbol(form, child) or current
-        return _renumber(units)
+        return _reify_units(form, base_line, spans)
     if head == "proxy" and len(spans) >= 3:
         type_name = _first_symbol_in_vector(form, spans[1])
         if type_name is None:
             return []
         return _method_units(form, base_line, spans[3:], type_name)
     return []
+
+
+def _reify_units(form: str, base_line: int, spans: list) -> list[dict]:
+    units = []
+    current = None
+    for child in spans[1:]:
+        if not _is_list(form, child):
+            current = _symbol(form, child) or current
+        elif current is not None:
+            units.extend(_method_units(form, base_line, [child], current))
+    return _renumber(units)
 
 
 def _renumber(units: list[dict]) -> list[dict]:
@@ -539,15 +549,20 @@ def _form_units(form: str, base_line: int, namespace: str | None = None) -> list
     head = _head(form, spans)
     if head == "defmethod":
         return _defmethod_unit(form, base_line, spans, namespace)
+    if head in _DEF_HEADS and len(spans) >= 3:
+        return _anonymous_units(form, base_line, spans[-1])
+    return _type_units(form, base_line, head, spans)
+
+
+def _type_units(form: str, base_line: int, head: str | None, spans: list) -> list[dict]:
+    """Method units of a type-defining form, or none for any other form."""
+
     if head in _TYPE_HEADS and len(spans) >= 3:
-        type_name = _symbol(form, spans[1])
-        return _method_units(form, base_line, spans[3:], type_name)
+        return _method_units(form, base_line, spans[3:], _symbol(form, spans[1]))
     if head == "extend-type" and len(spans) >= 2:
         return _method_units(form, base_line, spans[2:], _symbol(form, spans[1]))
     if head == "extend-protocol" and len(spans) >= 2:
         return _method_units(form, base_line, spans[2:], None, protocols_are_types=True)
-    if head in _DEF_HEADS and len(spans) >= 3:
-        return _anonymous_units(form, base_line, spans[-1])
     return []
 
 

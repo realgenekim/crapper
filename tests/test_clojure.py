@@ -263,3 +263,12 @@ def test_reify_and_proxy_methods_count_where_they_live():
         "JPanel.paintComponent": (2, 7),
         "make": (2, 8),
     }
+
+
+def test_child_end_spans_each_dispatch_and_prefix_form():
+    from crapper.languages.clojure import _child_end
+
+    for form in ('#{1 2}', '#(inc %)', '#"a\\"b"', "#:ns{:a 1}", "#?(:clj 1)",
+                 "#inst", "^:m [x]", "'(a b)", "~@xs"):
+        assert _child_end(f"{form} tail", 0) == len(form), form
+    assert _child_end("", 0) == 0
